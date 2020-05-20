@@ -6,13 +6,14 @@ import dash_html_components as html
 from dash.dependencies import Input, Output
 import dash_table
 # Importing internal methods used to create and maintain datastreams:
-from network_data_api import network_api
+from network_data_api import network_api, netwrk_data_structs
 # Importing data management packages:
 import pandas as pd
 from collections import deque
 import time
 # Importing data visualization packages:
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 
 
@@ -20,6 +21,14 @@ import plotly.graph_objects as go
 
 # Creating main dash object:
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.DARKLY])
+
+# Initalizing the data structs objects:
+api_data = network_api()
+data_structs = netwrk_data_structs()
+# Declaring global y-axis deque:
+X = deque(maxlen=20)
+X.append(1)
+
 
 # Defining the layout of the Dash applications:
 app.layout = html.Div(children=[
@@ -101,7 +110,6 @@ def build_nic_dash(nic_timestamp, socket_timestamp):
         children = []
 
         # Extracting the list of NIC names:
-        api_data = network_api()
         nic_names = network_api.get_nic_names()
 
         # The first child, the NIC data summary DataTable nested in format div:
@@ -133,21 +141,19 @@ def build_nic_dash(nic_timestamp, socket_timestamp):
         # Adding the first DataTable to the list of children:
         children.append(main_tbl_div)
 
-        # Creating the dcc.graph object and the interval object that will be added to children:
-        live_network_graph = dcc.Graph(id='nic_live_graph', animate=True)
+        # Creating an interval object for live graph update calls via callback:
         live_network_graph_interval = dcc.Interval(
-            id = 'nic_live_graph_update',
-            interval = 1000,
+            id = 'live_graph_update',
+            interval = 2000,
             n_intervals = 0
-        )
-
-        # Adding live graph and interval object to the list of children:
-        children.append(live_network_graph)
+            )
         children.append(live_network_graph_interval)
 
 
         # Iterating through the list of NICs and building custom data tables:
         for name in api_data.nic_names:
+
+            # Creating the main htm.Div tag i
 
             # Building dataframe of NIC address info based on each NIC:
             addr_df = network_api.build_net_if_addrs_df(name)
@@ -171,11 +177,22 @@ def build_nic_dash(nic_timestamp, socket_timestamp):
                     }
                 )
 
+            # Creating the live graphs displaying Network activity data for each NIC:
+            live_network_graph = dcc.Graph(id=f'{name}_live_graph', animate=True)
+            live_network_graph_div = html.Div(
+                children = [live_network_graph],
+                id = f'{name}_live_graph_div',
+                style = {
+                    'width': 'auto',
+                    'padding': '20px'}
+            )
+
             # Nesting the data table into a formatting div tag:
             format_div = html.Div(
                 children = [
                     html.H5(f'Address Information for NIC: {name}'),
-                    nic_info_tbl
+                    nic_info_tbl,
+                    live_network_graph_div
                     ],
                 id = f'{name}_addr_div',
                 style = {
@@ -184,8 +201,6 @@ def build_nic_dash(nic_timestamp, socket_timestamp):
             )
 
             children.append(format_div)
-
-            # TODO: Find out a div pushing system that builds inline [table: network graph] 
 
         return children
 
@@ -196,64 +211,189 @@ def build_nic_dash(nic_timestamp, socket_timestamp):
 
         return html.H1('Socket CALLBACK SET')
 
-# Method that encapsulates the callback method that cont. updates the graphs when called:
-def perform_update(name):
-    '''
-    A wrapper method that executes the live update ability for each NIC. This method
-    serves as a wrapper method so that concurrency can be added to the Dash.
 
-    Parameters
-    nic_name : str
-        The name of the Network Interface Card
-    '''
-    @app.callback(
-        Output(component_id= f'live-{name}-graph', component_property='figure'),
-        [Input(component_id= f'live-{name}-graph-update', component_property='n_intervals')]
-    )
-    def update_nic_graph(n):
-        '''
-        Method uses the callback above to update each dynamically generated graph
-        object based on the name of the NIC and the id of the previously generated
-        dcc.Graph objects by the previous callback.
+# Callback that updates the nic_live_graph based on the Interval object:
+@app.callback(
+    data_structs.graph_callback_outputs, # <- dynamically building list of graph outputs
+    [Input(component_id='live_graph_update', component_property='n_intervals')]
+)
+def update_nic_graph(n):
+    # TODO: Add documentation
 
-        Parameters
-        ----------
-        n : int
-            A "dummy" variable that represents the continuous output of the dcc.interval
-            object. Triggers an event every time n in input into the method
+    # Creating the list of figures that will be returned to the callback input:
+    fig_lst = []
 
-        Returns
-        -------
-        fig : plotly graph object
-            The go.Figure object representing the formatted and continuously updated
-            plotly graph of network data.
-        '''
-        # Unpacking current NIC data:
-        sent, recv, p_sent, p_recv, errin, errout, dropin, dropout = network_api.get_nic_info(name)
+    X.append(X[-1] + 1)
+    # Iterating through the list of NIC names and building each figure:
+    for name in api_data.nic_names:
 
-        # Updating the global deques:
-        timestamp = int(round(time.time()*1000))
-        X.append(timestamp)
-        Y.append(sent)
+        # Unpacking the most recent network transmition information:
+        (bytes_sent, bytes_recv, packets_sent, packets_recv, errin, errout,
+            dropin, dropout) = network_api.get_nic_counter(name)
 
-        data = go.Scatter(
-            x = list(X),
-            y = list(Y),
-            mode = 'lines'
+        # Updating the data stored in the deques created by the data_structs obj:
+        data_structs.nic_deques[name]['packets_sent'].append(packets_sent)
+        data_structs.nic_deques[name]['packets_recv'].append(packets_recv)
+        data_structs.nic_deques[name]['dropin'].append(dropin)
+        data_structs.nic_deques[name]['dropout'].append(dropout)
+
+
+
+        # Creating main figure with subplots to be updated:
+        fig = make_subplots(
+            # Declaring the dimensions of the subplots:
+            rows = 2, cols = 2,
+            specs = [
+                [{}, {}],
+                [{}, {}],
+
+            ],
+            subplot_titles = (
+                'Packets Sent', 'Packets Received',
+                'Dropped Incoming Packets', 'Dropped Outgoing Packets'
+                )
             )
 
-        layout = go.Layout(
-            title = go.layout.Title(text= f'NIC: {name}')
+        # Increasing size of the whole figure to support the number of subplots:
+        fig['layout'].update(height=1000)
+        fig.update_layout(
+            template='plotly_dark',
+            showlegend=False,
+            autosize=True,
+            title_text = f'{name} Live Network Feed')
+        fig.update_xaxes(showline=True, linewidth=2, mirror=True)
+        fig.update_yaxes(showline=True, linewidth=2, mirror=True)
+
+
+        # Adding and formatting trace for number of packets sent:
+        fig.add_trace(
+            go.Scatter(
+                x=list(X),
+                y=list(data_structs.nic_deques[name]['packets_sent']),
+                name = 'Scatter',
+                mode = 'lines+markers',
+                line = dict(color= '#00FF00')
+                ),
+            row = 1,
+            col = 1
+        )
+        fig.update_yaxes(
+            range=[
+                min(data_structs.nic_deques[name]['packets_sent']),
+                max(data_structs.nic_deques[name]['packets_sent']) + 100
+                ],
+            row = 1,
+            col = 1,
+            automargin = True
+            )
+        fig.update_xaxes(
+            range = [
+                min(X),
+                max(X) + 30
+            ],
+            row = 1,
+            col = 1
         )
 
+        # Adding and formatting trace for number of packets recieved:
+        fig.add_trace(
+            go.Scatter(
+                x=list(X),
+                y=list(data_structs.nic_deques[name]['packets_recv']),
+                name = 'Scatter',
+                mode = 'lines+markers',
+                line = dict(color= '#00FF00')
+                ),
+            row = 1,
+            col = 2
+        )
+        fig.update_yaxes(
+            range=[
+                min(data_structs.nic_deques[name]['packets_recv']),
+                max(data_structs.nic_deques[name]['packets_recv']) + 100
+                ],
+            row = 1,
+            col = 2,
+            automargin = True
+            )
+        fig.update_xaxes(
+            range = [
+                min(X),
+                max(X) + 30
+            ],
+            row = 1,
+            col = 2
+        )
 
-        fig = go.Figure(data=data, layout=layout)
-        fig.update_xaxes(range= [min(X), max(X)])
-        fig.update_yaxes(range= [min(Y), max(Y)+5000])
+        # Adding and formatting trace for number of incoming packets dropped:
+        fig.add_trace(
+            go.Scatter(
+                x=list(X),
+                y=list(data_structs.nic_deques[name]['dropin']),
+                name = 'Scatter',
+                mode = 'lines+markers',
+                line = dict(color= '#FF0000')
+                ),
+            row = 2,
+            col = 1
+        )
+        fig.update_yaxes(
+            range=[
+                min(data_structs.nic_deques[name]['dropin']),
+                max(data_structs.nic_deques[name]['dropin']) + 100
+                ],
+            row = 2,
+            col = 1,
+            automargin = True
+            )
+        fig.update_xaxes(
+            range = [
+                min(X),
+                max(X) + 30
+            ],
+            row = 2,
+            col = 1
+        )
 
-        return fig
+        # Adding and formatting trace for number of outgoing packets dropped:
+        fig.add_trace(
+            go.Scatter(
+                x=list(X),
+                y=list(data_structs.nic_deques[name]['dropout']),
+                name = 'Scatter',
+                mode = 'lines+markers',
+                line = dict(color= '#FF0000')
+                ),
+            row = 2,
+            col = 2
+        )
+        fig.update_yaxes(
+            range=[
+                min(data_structs.nic_deques[name]['dropout']),
+                max(data_structs.nic_deques[name]['dropout']) + 100
+                ],
+            row = 2,
+            col = 2,
+            automargin = True
+            )
+        fig.update_xaxes(
+            range = [
+                min(X),
+                max(X) + 30
+            ],
+            row = 2,
+            col = 2
+        )
+
+        # Appending figure to the main list of figures:
+        fig_lst.append(fig)
+
+
+    return fig_lst
 
 
 
 if __name__ == '__main__':
     app.run_server(debug=True)
+
+# TODO: Format, add Comments, Docs and a README

@@ -1,7 +1,11 @@
 # Importing data management packages:
 import pandas as pd
+from collections import deque
 # Importing the Network Data collection packages:
 import psutil
+# Importing plotly & Dash packages:
+from dash.dependencies import Output
+
 
 # This object inherits directly from the psutil object:
 class network_api():
@@ -216,3 +220,119 @@ class network_api():
         nic_address_df = pd.DataFrame(row_dict_lst)
 
         return nic_address_df
+
+# This object buids the necessary data structures needed for the network_activity_dashboard:
+class netwrk_data_structs():
+    """
+    Object contains all the instance variables and methods that build the custom
+    data structures that will be used in the network_activity_dashboard Dash
+    application
+    """
+    def __init__(self):
+
+        # Declaring instance variables that initializes structure building methods:
+        self.nic_name_lst = network_api.get_nic_names() # lst of nic names from network_api
+        self.nic_deques = self.build_nic_deque(20)
+        self.graph_callback_outputs = self.build_dash_graph_outputs()
+
+    def build_nic_deque(self, deque_length):
+        '''
+        Method builds a list of custom deques based on the number and names of
+        NIC stored in the self.nic_name_lst. These deques will be used in the
+        network_activity_dashboard to facilitate the updating of the live subplots.
+
+        Parameters
+        ----------
+        deque_length : int
+            An integer that determines the max length of the deques.
+
+        Returns
+        -------
+        deque_dict : dict
+            A dictionary that contains a nested dict where the key-value pairs are
+            the name of the NIC and the value is a dict that contains the key-value
+            of the net_io_counters parameter and the corresponding deque.
+
+            Eg of dict struct: {'lo' : {'bytes_sent' : deque, 'bytes_recy': deque}}
+        '''
+        # Creating the main dict:
+        deque_dict = {}
+
+        # Iterating through the list of NIC names and building nested dicts:
+        for name in self.nic_name_lst:
+
+            deque_dict[name] = {
+                'bytes_sent': deque(maxlen = deque_length),
+                'bytes_recv': deque(maxlen = deque_length),
+                'packets_sent': deque(maxlen = deque_length),
+                'packets_recv': deque(maxlen = deque_length),
+                'errin': deque(maxlen = deque_length),
+                'errout': deque(maxlen = deque_length),
+                'dropin': deque(maxlen = deque_length),
+                'dropout': deque(maxlen = deque_length)
+            }
+
+        return deque_dict
+
+    def get_deque(self, nic_name, deque_name):
+        '''
+        Method that accesses the instance variable self.nic_deques and searches
+        the nested dicts for the specific deques based on the name of the nic
+        and the name of the deque associated with the specified network variable.
+
+        This is the main method of returning a deque for plotting the live graphs
+        in the network_activity_dashboard. This is a basic nested dict search method.
+
+        Parameters
+        ----------
+        nic_name : str
+            The name of the NIC
+
+        deque_name : str
+            A string representing the network variable with which the deque is
+            associated.
+
+        Returns
+        -------
+        deque : collections.deque
+            The deque that is found via the search
+        '''
+        # Performing both search slices on the main instance dict:
+        try:
+
+            return self.nic_deques[nic_name][deque_name]
+
+        except:
+            return None
+
+    def build_dash_graph_outputs(self):
+        '''
+        This method makes use of the instace variable nic_name_lst and builds a
+        list of dash.dependencies Outputs that should correspond to each NIC
+        detected.
+
+        This method is meant to be used to dynamically build the Outputs for the
+        @app.callback decorator that performs the live graph updates in the
+        network_activity_dashboard.
+
+        Returns
+        -------
+        output_lst : lst
+            A list of dash.dependencies Output objects built according to the
+            number of NICs detected and their names as well as the dashboards
+            id naming conventions
+        '''
+        # Empty list:
+        output_lst = []
+
+        # Iterating over list of NIC names detected and building output_lst:
+        for name in self.nic_name_lst:
+
+            # Creating Output object: based on naming convention: {nic_name}_live_graph
+            callback_output = Output(component_id = f'{name}_live_graph',
+                component_property = 'figure')
+
+            # Appending output_lst:
+            output_lst.append(callback_output)
+
+        return output_lst
