@@ -8,7 +8,7 @@ The main data visualization via the Dash library is done within the `network_act
 ## Table of Contents
 * ### Installation
 * ### Usage
-* # Dashboard Documentation
+* ### Dashboard Documentation
   * ### network_activity_dashboard.py
   * ### network_data_api.py
 
